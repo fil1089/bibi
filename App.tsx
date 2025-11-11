@@ -1,12 +1,11 @@
+
 import React, { useState, useCallback, useMemo, useRef, useLayoutEffect, useEffect } from 'react';
 import FileUpload from './components/FileUpload';
 import DataTable from './components/DataTable';
-import Controls from './components/Controls';
 import NoteEditor from './components/NoteEditor';
 import NumericKeyboard from './components/NumericKeyboard';
 import { SheetData, HighlightedCells, CellNotes, FilterType } from './types';
 
-declare const XLSX: any;
 declare const ExcelJS: any;
 
 type NoteEditorState = {
@@ -37,32 +36,39 @@ const calculateAutoWidths = (headers: string[], data: SheetData): number[] => {
 };
 
 const readInitialWidths = (worksheet: any, headers: string[], data: SheetData): number[] => {
-    if (worksheet && worksheet['!cols']) {
-        return worksheet['!cols'].map((col: any) => col.wpx || col.wch * 8 || 100);
+    if (!worksheet || !worksheet.columns) {
+        return calculateAutoWidths(headers, data);
     }
-    return calculateAutoWidths(headers, data);
+
+    const widths: number[] = [];
+    worksheet.columns.forEach((column: any) => {
+        if (column && column.width) {
+            widths.push(column.width * 8); // Конвертировать из символов в пиксели
+        } else {
+            widths.push(100);
+        }
+    });
+
+    return widths.length > 0 ? widths : calculateAutoWidths(headers, data);
 };
 
 const readInitialNotes = (worksheet: any): CellNotes => {
     const notes: CellNotes = {};
     if (!worksheet) return notes;
 
-    for (const cellAddress in worksheet) {
-        if (cellAddress[0] === '!') continue; 
+    worksheet.eachRow((row: any, rowNumber: number) => {
+        if (rowNumber === 1) return;
 
-        const cell = worksheet[cellAddress];
-        if (cell && cell.c) { 
-            try {
-                const decodedCell = XLSX.utils.decode_cell(cellAddress);
-                if(decodedCell.r > 0) { // Assuming row 0 is headers
-                    const commentText = Array.isArray(cell.c) ? cell.c.map((c: any) => c.t).join('\n') : '';
-                    notes[`${decodedCell.r - 1}-${decodedCell.c}`] = commentText;
-                }
-            } catch (err) {
-                console.warn(`Error parsing note at ${cellAddress}:`, err);
+        row.eachCell((cell: any, colNumber: number) => {
+            if (cell.note) {
+                const key = `${rowNumber - 2}-${colNumber - 1}`;
+                notes[key] = typeof cell.note === 'string' 
+                    ? cell.note 
+                    : cell.note.text || '';
             }
-        }
-    }
+        });
+    });
+
     return notes;
 };
 
@@ -70,42 +76,41 @@ const readInitialHighlights = (worksheet: any): HighlightedCells => {
     const highlights: HighlightedCells = {};
     if (!worksheet) return highlights;
 
-    for (const cellAddress in worksheet) {
-        if (cellAddress[0] === '!') continue;
+    worksheet.eachRow((row: any, rowNumber: number) => {
+        if (rowNumber === 1) return; // Пропустить заголовки
 
-        try {
-            const cell = worksheet[cellAddress];
-            if (cell && cell.s && cell.s.fill && cell.s.fill.fgColor && cell.s.fill.fgColor.rgb) {
-                const rgb = cell.s.fill.fgColor.rgb;
-                const colorHex = rgb.length > 6 ? rgb.substring(rgb.length - 6) : rgb;
-
-                if (colorHex.length < 6) continue;
-
-                const r = parseInt(colorHex.substring(0, 2), 16);
-                const g = parseInt(colorHex.substring(2, 4), 16);
-                const b = parseInt(colorHex.substring(4, 6), 16);
-
-                const isRed = r > 100 && r > g * 1.5 && r > b * 1.5;
-                const isGreen = g > 100 && g > r * 1.5 && g > b * 1.5;
-
-                if (isRed || isGreen) {
-                    const decodedCell = XLSX.utils.decode_cell(cellAddress);
-                    if (decodedCell.r > 0) {
-                        const key = `${decodedCell.r - 1}-${decodedCell.c}`;
-                        if (isRed) {
-                            highlights[key] = 'red';
-                        } else if (isGreen) {
-                            highlights[key] = 'green';
+        row.eachCell((cell: any, colNumber: number) => {
+            const fill = cell.fill;
+            
+            if (fill && fill.type === 'pattern' && fill.pattern === 'solid') {
+                const fgColor = fill.fgColor;
+                
+                if (fgColor && fgColor.argb) {
+                    const argb = fgColor.argb;
+                    const rgb = argb.length > 6 ? argb.substring(2) : argb;
+                    
+                    // Prevent error on invalid hex values
+                    if (rgb && rgb.length >= 6) {
+                        const r = parseInt(rgb.substring(0, 2), 16);
+                        const g = parseInt(rgb.substring(2, 4), 16);
+                        const b = parseInt(rgb.substring(4, 6), 16);
+                        
+                        const isRed = r > 100 && r > g * 1.5 && r > b * 1.5;
+                        const isGreen = g > 100 && g > r * 1.5 && g > b * 1.5;
+                        
+                        if (isRed || isGreen) {
+                            const key = `${rowNumber - 2}-${colNumber - 1}`;
+                            highlights[key] = isRed ? 'red' : 'green';
                         }
                     }
                 }
             }
-        } catch(err) {
-            console.warn(`Error parsing highlight at ${cellAddress}:`, err);
-        }
-    }
+        });
+    });
+
     return highlights;
 };
+
 
 const REVISION_GROUP_PREFIX = 'Ревизионная группа';
 
@@ -127,8 +132,6 @@ const App: React.FC = () => {
     const [columnWidths, setColumnWidths] = useState<number[]>([]);
     const [isKeyboardVisible, setKeyboardVisible] = useState(false);
     const [highlightMode, setHighlightMode] = useState(false);
-    const [controlsHeight, setControlsHeight] = useState(0);
-    const controlsRef = useRef<HTMLDivElement>(null);
     
     const [currentMatchIndex, setCurrentMatchIndex] = useState(0);
     const [scrollToRowIndex, setScrollToRowIndex] = useState<number | null>(null);
@@ -145,17 +148,6 @@ const App: React.FC = () => {
     useEffect(() => {
         setSelectedCell(null);
     }, [filter]);
-
-    useLayoutEffect(() => {
-        const updateHeight = () => {
-            if (controlsRef.current) {
-                setControlsHeight(controlsRef.current.offsetHeight);
-            }
-        };
-        updateHeight();
-        window.addEventListener('resize', updateHeight);
-        return () => window.removeEventListener('resize', updateHeight);
-    }, [fileName]); // Recalculate when file is loaded/unloaded
 
     const handleFileProcessed = useCallback((newHeaders: string[], newData: SheetData, newFileName: string, worksheet: any) => {
         const initialNotesData = readInitialNotes(worksheet);
@@ -328,6 +320,7 @@ const App: React.FC = () => {
         } else {
             setSelectedCell({ row: rowIndex, col: colIndex });
         }
+        setKeyboardVisible(true);
     }, [selectedCell]);
 
     const handleRequestNoteEditor = () => {
@@ -512,21 +505,6 @@ const App: React.FC = () => {
         if (fileName && sheetData.length > 0) {
             return (
                 <div className="flex flex-col h-full w-full">
-                    <div ref={controlsRef}>
-                        <Controls 
-                            fileName={fileName} 
-                            searchQuery={searchQuery} 
-                            setSearchQuery={setSearchQuery} 
-                            onReset={resetApp} 
-                            onSave={handleSaveFile}
-                            filter={filter}
-                            setFilter={setFilter}
-                            onSearchFocus={() => setKeyboardVisible(true)}
-                            searchMatchCount={searchMatches.length}
-                            currentMatchIndex={currentMatchIndex}
-                            onNavigateMatch={handleNavigateMatch}
-                        />
-                    </div>
                     <DataTable
                         headers={headers}
                         data={filteredData}
@@ -541,7 +519,6 @@ const App: React.FC = () => {
                         highlightedHeaderIndices={highlightedHeaderIndices}
                         onHeaderClick={handleHeaderClick}
                         highlightMode={highlightMode}
-                        controlsHeight={controlsHeight}
                         scrollToRowIndex={scrollToRowIndex}
                     />
                 </div>
@@ -574,6 +551,14 @@ const App: React.FC = () => {
                     }}
                     onAddNote={handleRequestNoteEditor}
                     isCellSelected={!!selectedCell}
+                    onReset={resetApp}
+                    onSave={handleSaveFile}
+                    searchQuery={searchQuery}
+                    searchMatchCount={searchMatches.length}
+                    currentMatchIndex={currentMatchIndex}
+                    onNavigateMatch={handleNavigateMatch}
+                    filter={filter}
+                    setFilter={setFilter}
                 />
             )}
         </main>

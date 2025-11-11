@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useCallback } from 'react';
+import React, { useRef, useEffect, useCallback, useLayoutEffect, useState } from 'react';
 import { SheetRow, HighlightedCells, CellNotes } from '../types';
 
 interface DataTableProps {
@@ -15,7 +15,6 @@ interface DataTableProps {
     highlightedHeaderIndices: Set<number>;
     onHeaderClick: (colIndex: number) => void;
     highlightMode: boolean;
-    controlsHeight: number;
     scrollToRowIndex: number | null;
 }
 
@@ -35,11 +34,18 @@ const DataTable: React.FC<DataTableProps> = ({
     highlightedHeaderIndices, 
     onHeaderClick, 
     highlightMode, 
-    controlsHeight,
     scrollToRowIndex
 }) => {
     const rowRefs = useRef<(HTMLTableRowElement | null)[]>([]);
     const resizingColumnRef = useRef<{ index: number; startX: number; startWidth: number; } | null>(null);
+    const headerRef = useRef<HTMLTableSectionElement | null>(null);
+    const [headerHeight, setHeaderHeight] = useState(0);
+
+    useLayoutEffect(() => {
+        if (headerRef.current) {
+            setHeaderHeight(headerRef.current.offsetHeight);
+        }
+    }, [headers]);
 
     useEffect(() => {
         rowRefs.current = rowRefs.current.slice(0, data.length);
@@ -86,7 +92,7 @@ const DataTable: React.FC<DataTableProps> = ({
         window.addEventListener('mouseup', handleMouseUp);
     };
     
-    const rowStyle = { scrollMarginTop: `${controlsHeight + 16}px` };
+    const rowStyle = { scrollMarginTop: `${headerHeight}px` };
     const searchMatchesSet = new Set(searchMatches);
 
     return (
@@ -97,7 +103,7 @@ const DataTable: React.FC<DataTableProps> = ({
                         <col key={index} style={{ width: `${width}px` }} />
                     ))}
                 </colgroup>
-                <thead className="sticky top-0 z-20 bg-gray-900 shadow-sm">
+                <thead ref={headerRef} className="sticky top-0 z-20 bg-gray-900 shadow-sm">
                     <tr>
                         {headers.map((header, index) => {
                             const isRevisionGroupHeader = header.trim().startsWith(REVISION_GROUP_PREFIX);

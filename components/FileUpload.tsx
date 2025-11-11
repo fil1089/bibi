@@ -9,48 +9,57 @@ interface FileUploadProps {
     setError: (error: string) => void;
 }
 
-declare const XLSX: any;
+declare const ExcelJS: any;
 
 const FileUpload: React.FC<FileUploadProps> = ({ onFileProcessed, setLoading, setError }) => {
 
-    const handleFileChange = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const handleFileChange = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
         const file = event.target.files?.[0];
         if (!file) return;
 
         setLoading(true);
         setError('');
-        const reader = new FileReader();
 
-        reader.onload = (e) => {
-            try {
-                const data = e.target?.result;
-                const workbook = XLSX.read(data, { type: 'array', cellStyles: true });
-                const sheetName = workbook.SheetNames[0];
-                const worksheet = workbook.Sheets[sheetName];
-                const json: (string|number|null)[][] = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: null });
+        try {
+            const buffer = await file.arrayBuffer();
+            const workbook = new ExcelJS.Workbook();
+            await workbook.xlsx.load(buffer);
 
-                if (json.length === 0) {
-                    throw new Error("Выбранный файл пуст или не может быть прочитан.");
-                }
-
-                const headers = json[0] ? json[0].map(h => String(h ?? '')) : [];
-                const sheetData = json.slice(1);
-
-                onFileProcessed(headers, sheetData, file.name, worksheet);
-            } catch (err) {
-                console.error(err);
-                setError("Не удалось обработать файл. Убедитесь, что это действительный файл XLS или XLSX.");
-            } finally {
+            const worksheet = workbook.worksheets[0];
+            if (!worksheet) {
+                setError('Файл не содержит листов');
                 setLoading(false);
+                return;
             }
-        };
 
-        reader.onerror = () => {
-            setError("Не удалось прочитать файл.");
+            // Извлечь заголовки
+            const headers: string[] = [];
+            const headerRow = worksheet.getRow(1);
+            headerRow.eachCell({ includeEmpty: true }, (cell: any) => {
+                headers.push(String(cell.value ?? ''));
+            });
+
+            // Извлечь данные
+            const data: SheetData = [];
+            for (let i = 2; i <= worksheet.rowCount; i++) {
+                const row = worksheet.getRow(i);
+                const rowData: (string | number | boolean | null)[] = [];
+                
+                for (let j = 1; j <= headers.length; j++) {
+                    const cell = row.getCell(j);
+                    rowData.push(cell.value ?? null);
+                }
+                
+                data.push(rowData);
+            }
+
+            onFileProcessed(headers, data, file.name, worksheet);
+        } catch (err) {
+            console.error('Ошибка загрузки:', err);
+            setError('Не удалось загрузить файл');
+        } finally {
             setLoading(false);
         }
-
-        reader.readAsArrayBuffer(file);
     }, [onFileProcessed, setLoading, setError]);
 
     return (
